@@ -43,5 +43,15 @@
         [
             { "key": "selector", "operator": "equal", "operand": "source.scala" }
         ]
+    },
+    { "keys": ["ctrl+alt+space"], "command": "clang_goto_definition", "context":
+        [
+            { "key": "selector", "operator": "equal", "operand": "source.c" }
+        ]
+    },
+    { "keys": ["super+f4"], "command": "clang_goto_usages", "context":
+        [
+            { "key": "selector", "operator": "equal", "operand": "source.c" }
+        ]
     }
 ]

@@ -6,6 +6,7 @@ import re
 import os
 import json
 import threading
+import linecache
 
 try:
     # Python 3
@@ -475,6 +476,98 @@ class ScalaRunClass(sublime_plugin.TextCommand, RunClass):
                 return package_name + "." + class_name
 
 
+class ClangGotoDefinition(sublime_plugin.TextCommand):
+    '''Asks Eclipse for the definition location and moves ST2 there if found'''
+
+    def run(self, edit, block=False):
+        if not check_eclim(self.view):
+            return
+        project, file = get_context(self.view)
+        pos = self.view.sel()[0]
+        word = self.view.word(pos)
+        offset = offset_of_location(self.view, word.a)
+        locations = self.call_eclim(project, file, offset, word.size())
+        locations = self.to_list(locations)
+
+        #  one definition was found and it is in a c file -> go there
+        if len(locations) == 1:
+            if locations[0]['filename'].endswith("c"):
+                self.go_to_location(locations[0])
+                return
+
+        # we didnt return correctly, display error in statusbar
+        error_msg = "Could not find definition of %s" % self.view.substr(word)
+        log.error(error_msg)
+
+    def call_eclim(self, project, filename, offset, ident_len, shell=True):
+        eclim.update_c_src(project, filename)
+
+        go_to_cmd = ['-command', 'c_search',
+                     '-n', project,
+                     '-f', filename,
+                     '-o', str(offset),
+                     '-e', 'utf-8',
+                     '-l', str(ident_len)]
+        out = eclim.call_eclim(go_to_cmd)
+        return out
+
+    def to_list(self, locations):
+        return json.loads(locations)
+
+    def go_to_location(self, loc):
+        # save current position
+        row, col = self.view.rowcol(self.view.sel()[0].a)
+        SubclimGoBack.navigation_stack.append("%s:%d:%d" % (
+            self.view.file_name(), row + 1, col + 1))
+
+        # go to new position
+        f, l, c = loc['filename'], loc['line'], loc['column']
+        path = "%s:%s:%s" % (f, l, c)
+        sublime.active_window().open_file(path, sublime.ENCODED_POSITION)
+
+
+class ClangGotoUsages(ClangGotoDefinition):
+    '''Asks Eclipse for the usage locations and moves ST2 there if found'''
+    def run(self, edit, block=False):
+        if not check_eclim(self.view):
+            return
+        project, file = get_context(self.view)
+        pos = self.view.sel()[0]
+        word = self.view.word(pos)
+        offset = offset_of_location(self.view, word.a)
+        locations = self.call_eclim(project, file, offset, word.size())
+        locations = self.to_list(locations)
+
+        if len(locations) == 1:
+            #  one definition was found and it is in a c file -> go there
+            if locations[0]['filename'].endswith("c"):
+                self.go_to_location(locations[0])
+                return
+        else:
+            #  multiple usages -> show menu
+            self.locations = locations
+            self.view.window().show_quick_panel(
+                [[linecache.getline(l['filename'], l['line']), "%s:%d" % (os.path.basename(l['filename']), l['line'])] for l in self.locations],
+                self.location_selected, sublime.MONOSPACE_FONT)
+
+    def location_selected(self, selected_idx):
+        if selected_idx != -1:
+            self.go_to_location(self.locations[selected_idx])
+
+    def call_eclim(self, project, filename, offset, ident_len, shell=True):
+        eclim.update_c_src(project, filename)
+
+        go_to_cmd = ['-command', 'c_search',
+                     '-n', project,
+                     '-f', filename,
+                     '-o', str(offset),
+                     '-e', 'utf-8',
+                     '-l', str(ident_len),
+                     '-x', 'references']
+        out = eclim.call_eclim(go_to_cmd)
+        return out
+
+
 class CompletionProposal(object):
     def __init__(self, name, insert=None, type="None"):
         split = name.split(" ")
@@ -542,8 +635,21 @@ class JavaCompletions(sublime_plugin.EventListener):
             return self.call_eclim_java
         elif "Scala.tmLanguage" in syntax:
             return self.call_eclim_scala
+        elif "C.tmLanguage" in syntax:
+            return self.call_eclim_c
         else:
             return None
+
+    def call_eclim_c(self, project, file, offset, shell=True):
+        eclim.update_c_src(project, file)
+        complete_cmd = "-command c_complete \
+                                -p %s \
+                                -f %s \
+                                -o %i \
+                                -e utf-8 \
+                                -l compact" % (project, file, offset)
+        out = eclim.call_eclim(complete_cmd)
+        return out
 
     def call_eclim_java(self, project, file, offset, shell=True):
         eclim.update_java_src(project, file)
